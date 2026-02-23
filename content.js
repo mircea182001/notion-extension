@@ -613,7 +613,62 @@
   }
 
   // ----------------------------------------------------------------
-  // 8. SCREENSHOT CAPTURE
+  // 8. FULL-PAGE EXPANSION (capture off-screen content)
+  // ----------------------------------------------------------------
+
+  /**
+   * Temporarily expands all scrollable ancestors of the capture target
+   * so that html2canvas can render content below the fold (e.g. long
+   * descriptions pushing the table off-screen).
+   * Returns a restore function.
+   */
+  function expandForFullCapture(target) {
+    const saved = [];
+
+    // Walk up from the target and expand every scrollable container
+    let el = target;
+    while (el && el !== document.documentElement) {
+      const style = getComputedStyle(el);
+      const isScrollable =
+        el.scrollHeight > el.clientHeight &&
+        (style.overflow === "auto" ||
+         style.overflow === "hidden" ||
+         style.overflow === "scroll" ||
+         style.overflowY === "auto" ||
+         style.overflowY === "hidden" ||
+         style.overflowY === "scroll");
+
+      if (isScrollable) {
+        saved.push({
+          el,
+          scrollTop: el.scrollTop,
+          height: el.style.height,
+          maxHeight: el.style.maxHeight,
+          overflow: el.style.overflow,
+          overflowY: el.style.overflowY,
+        });
+        el.scrollTop = 0;
+        el.style.height = el.scrollHeight + "px";
+        el.style.maxHeight = "none";
+        el.style.overflow = "visible";
+        el.style.overflowY = "visible";
+      }
+      el = el.parentElement;
+    }
+
+    return function restore() {
+      saved.forEach(({ el, scrollTop, height, maxHeight, overflow, overflowY }) => {
+        el.style.height = height;
+        el.style.maxHeight = maxHeight;
+        el.style.overflow = overflow;
+        el.style.overflowY = overflowY;
+        el.scrollTop = scrollTop;
+      });
+    };
+  }
+
+  // ----------------------------------------------------------------
+  // 9. SCREENSHOT CAPTURE
   // ----------------------------------------------------------------
 
   const statusEl = panel.querySelector(".nss-status");
@@ -636,18 +691,22 @@
     // Apply visibility toggles
     const restoreVisibility = applyVisibilitySettings();
 
+    // Determine the target element to capture — the content area
+    // to the right of the sidebar (cover + title + page content)
+    const target = NotionSelectors.captureTarget() || document.body;
+
     // Apply wide database fit
     const { restore: restoreWide, captureWidth } = applyWideDatabaseFit();
+
+    // Expand scrollable containers so the full page is captured,
+    // not just what's visible in the viewport
+    const restoreExpansion = expandForFullCapture(target);
 
     // Small delay to let the DOM settle after style changes
     await new Promise((r) => setTimeout(r, 150));
 
     try {
       setStatus("Capturing...");
-
-      // Determine the target element to capture — the content area
-      // to the right of the sidebar (cover + title + page content)
-      const target = NotionSelectors.captureTarget() || document.body;
 
       // html2canvas options
       const options = {
@@ -716,6 +775,7 @@
       setStatus("Capture failed: " + err.message, "error");
     } finally {
       // Restore everything
+      restoreExpansion();
       restoreVisibility();
       restoreWide();
 
@@ -744,7 +804,7 @@
   screenshotBtn.addEventListener("click", takeScreenshot);
 
   // ----------------------------------------------------------------
-  // 9. DONE — log to console for debugging
+  // 10. DONE — log to console for debugging
   // ----------------------------------------------------------------
   console.log("[Notion Screenshot Tool] Extension loaded.");
 })();
