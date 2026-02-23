@@ -186,16 +186,52 @@
     },
 
     /**
-     * The main page content area — what we want to screenshot.
-     * This excludes the sidebar and top navigation.
+     * The main page content area (below cover/title).
+     * Used for sub-element lookups and wide-database fitting.
      */
     pageContent() {
       return (
         document.querySelector(".notion-page-content") ||
-        document.querySelector(".notion-scroller") ||
-        // Fallback: the main frame area
+        // Scoped to .notion-frame so we never match the sidebar scroller
+        document.querySelector(".notion-frame .notion-scroller") ||
         document.querySelector('.notion-frame [class*="scroller"]') ||
         document.querySelector(".notion-frame")
+      );
+    },
+
+    /**
+     * The full capture target — the scrollable content pane inside
+     * .notion-frame that contains cover + icon + title + page content.
+     * This is everything to the RIGHT of the sidebar.
+     */
+    captureTarget() {
+      return (
+        // The scroller inside the frame holds cover + title + content
+        document.querySelector(".notion-frame .notion-scroller") ||
+        document.querySelector('.notion-frame [class*="scroller"]') ||
+        document.querySelector(".notion-frame") ||
+        document.querySelector(".notion-page-content")
+      );
+    },
+
+    /**
+     * The sidebar — the left panel with Search, Home, Favorites, etc.
+     */
+    sidebar() {
+      return (
+        document.querySelector(".notion-sidebar") ||
+        document.querySelector('[class*="notion-sidebar"]')
+      );
+    },
+
+    /**
+     * The top bar / header above the page content.
+     */
+    topBar() {
+      return (
+        document.querySelector(".notion-topbar") ||
+        document.querySelector('[class*="notion-topbar"]') ||
+        document.querySelector(".notion-frame > div:first-child:not(.notion-scroller)")
       );
     },
 
@@ -469,6 +505,10 @@
       NotionSelectors.uiChrome().forEach(hideElement);
     }
 
+    // Always hide the sidebar and top bar — they should never be in screenshots
+    hideElement(NotionSelectors.sidebar());
+    hideElement(NotionSelectors.topBar());
+
     return function restore() {
       hidden.forEach(({ element, originalDisplay }) => {
         element.style.display = originalDisplay;
@@ -605,8 +645,9 @@
     try {
       setStatus("Capturing...");
 
-      // Determine the target element to capture
-      const target = NotionSelectors.pageContent() || document.querySelector(".notion-frame") || document.body;
+      // Determine the target element to capture — the content area
+      // to the right of the sidebar (cover + title + page content)
+      const target = NotionSelectors.captureTarget() || document.body;
 
       // html2canvas options
       const options = {
