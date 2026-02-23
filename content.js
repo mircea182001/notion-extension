@@ -24,7 +24,41 @@
 
     /** The title input — the most reliable anchor in Notion's DOM. */
     _titleInput() {
-      return document.querySelector('[placeholder="Untitled"]');
+      // Strategy 1: standard pages use [placeholder="Untitled"]
+      const standard = document.querySelector('[placeholder="Untitled"]');
+      if (standard) return standard;
+
+      // Strategy 2: full-page database pages don't use that placeholder.
+      // Find the main visible scroller child, then look for the element
+      // with the largest font-size among placeholder / contenteditable
+      // elements. The title is always the largest text on the page.
+      const scroller = this.captureTarget();
+      if (!scroller) return null;
+
+      const mainChild = [...scroller.children].find((c) => c.offsetHeight > 100);
+      if (!mainChild) return null;
+
+      const candidates = mainChild.querySelectorAll(
+        '[placeholder], [contenteditable="true"], [data-content-editable-leaf]'
+      );
+      let best = null;
+      let bestFs = 0;
+      const mainRect = mainChild.getBoundingClientRect();
+
+      for (const el of candidates) {
+        // Only consider elements in the top portion of the content
+        const elRect = el.getBoundingClientRect();
+        if (elRect.top - mainRect.top > 600) continue;
+
+        const fs = parseFloat(getComputedStyle(el).fontSize);
+        if (fs > bestFs) {
+          bestFs = fs;
+          best = el;
+          if (fs >= 32) break; // Definitely the title; early exit
+        }
+      }
+
+      return best && bestFs >= 24 ? best : null;
     },
 
     /** Given an element, find the direct child of the scroller that contains it. */
@@ -53,38 +87,57 @@
 
     /**
      * Page cover image — the large banner at the top.
-     * Strategy: walk direct children of the scroller that appear BEFORE
-     * the title section and look for one that contains an <img> or a
-     * background-image and has significant height.
+     * Strategy 1: look for a separate scroller child (with an image)
+     *             that appears before the title section.
+     * Strategy 2: look inside the main content child for a wide image
+     *             that is positioned above the title element.
      */
     pageCover() {
       const scroller = this.captureTarget();
-      const titleInput = this._titleInput();
-      if (!scroller || !titleInput) return null;
+      if (!scroller) return null;
 
-      const titleSection = this._scrollerChildOf(titleInput);
-      if (!titleSection) return null;
+      const titleEl = this._titleInput();
+      const titleSection = titleEl ? this._scrollerChildOf(titleEl) : null;
 
-      for (const child of scroller.children) {
-        // Stop once we reach the section that holds the title
-        if (child === titleSection) break;
-        // Skip tiny/invisible elements
-        if (child.offsetHeight < 60 || child.offsetWidth < 100) continue;
-
-        // Has a direct <img>?
-        if (child.querySelector("img")) return child;
-
-        // Has a CSS background-image?
-        const bg = getComputedStyle(child).backgroundImage;
-        if (bg && bg !== "none") return child;
-
-        // Check nested children for background-image or img
-        for (const gc of child.querySelectorAll("*")) {
-          if (gc.tagName === "IMG") return child;
-          const gcBg = getComputedStyle(gc).backgroundImage;
-          if (gcBg && gcBg !== "none" && gc.offsetHeight >= 40) return child;
+      // Strategy 1: separate scroller child before the title section
+      if (titleSection) {
+        for (const child of scroller.children) {
+          if (child === titleSection) break;
+          if (child.offsetHeight < 60 || child.offsetWidth < 100) continue;
+          if (child.querySelector("img")) return child;
+          const bg = getComputedStyle(child).backgroundImage;
+          if (bg && bg !== "none") return child;
         }
       }
+
+      // Strategy 2: large image inside the main content, above the title
+      const mainChild = [...scroller.children].find((c) => c.offsetHeight > 100);
+      if (!mainChild) return null;
+
+      const images = mainChild.querySelectorAll("img");
+      for (const img of images) {
+        if (img.offsetHeight < 60) continue;
+        if (img.offsetWidth < mainChild.offsetWidth * 0.5) continue;
+
+        // If we have a title, the cover must be above it
+        if (titleEl) {
+          const imgRect = img.getBoundingClientRect();
+          const titleRect = titleEl.getBoundingClientRect();
+          if (imgRect.top >= titleRect.top) continue;
+        }
+
+        // Walk up to find the container div (but stay inside mainChild)
+        let container = img.parentElement;
+        while (
+          container &&
+          container !== mainChild &&
+          container.children.length === 1
+        ) {
+          container = container.parentElement;
+        }
+        return container === mainChild ? img.parentElement : container;
+      }
+
       return null;
     },
 
