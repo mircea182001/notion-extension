@@ -13,200 +13,35 @@
 
   // ----------------------------------------------------------------
   // 1. NOTION DOM SELECTORS
-  //    Notion's class names are obfuscated. We use structural /
-  //    semantic selectors wherever possible and fall back to
-  //    heuristic matchers. Each selector is documented so it can
-  //    be updated if Notion's DOM changes.
+  //    Notion's class names are obfuscated and change frequently.
+  //    Instead of guessing class names, we use STRUCTURAL selectors:
+  //    we anchor on [placeholder="Untitled"] (the title input, which
+  //    is stable) and walk the DOM tree relative to it.
   // ----------------------------------------------------------------
 
   const NotionSelectors = {
-    /**
-     * Page cover image — the large banner at the top.
-     * Notion wraps it in an <img> inside a container with
-     * a "page-cover" style; we also try [data-block-id] ancestors.
-     * Structural path: .notion-page-content > first child img wrapper.
-     */
-    pageCover() {
-      return (
-        // Direct class-based selector (most common)
-        document.querySelector(".notion-page-cover") ||
-        // Fallback: large image at top of the page content area
-        document.querySelector(
-          '.notion-page-content > div:first-child img[style*="object-fit"]'
-        )?.closest("div[style]")
-      );
+    // ---- Internal helpers ----
+
+    /** The title input — the most reliable anchor in Notion's DOM. */
+    _titleInput() {
+      return document.querySelector('[placeholder="Untitled"]');
     },
 
-    /**
-     * Page icon — emoji or uploaded image at the top-left.
-     * Usually inside a container with role="button" near the title,
-     * or a div with class containing "page-icon".
-     */
-    pageIcon() {
-      return (
-        document.querySelector(".notion-page-icon") ||
-        // Fallback: the icon container is typically the first child
-        // within the record-icon wrapper
-        document.querySelector(".notion-record-icon") ||
-        document.querySelector(
-          '.notion-page-content [role="button"][style*="font-size: 78px"]'
-        )?.closest("div")
-      );
+    /** Given an element, find the direct child of the scroller that contains it. */
+    _scrollerChildOf(el) {
+      const scroller = this.captureTarget();
+      if (!scroller || !el) return null;
+      let current = el;
+      while (current && current.parentElement !== scroller) {
+        current = current.parentElement;
+      }
+      return current; // null if el is not inside the scroller
     },
 
-    /**
-     * Page title — the large editable heading.
-     * Notion renders it as a div[placeholder="Untitled"] or
-     * h1-style element with contenteditable.
-     */
-    pageTitle() {
-      return (
-        document.querySelector(
-          '.notion-page-content [placeholder="Untitled"]'
-        )?.closest(".notion-selectable") ||
-        document.querySelector(
-          '.notion-page-content div[data-content-editable-leaf][style*="font-size: 40px"]'
-        )?.closest(".notion-selectable") ||
-        // Fallback: first large text block in page content
-        (() => {
-          const candidates = document.querySelectorAll(
-            ".notion-page-content .notion-selectable"
-          );
-          for (const el of candidates) {
-            const h = el.querySelector(
-              'h1, [style*="font-size: 40px"], [placeholder="Untitled"]'
-            );
-            if (h) return el;
-          }
-          return null;
-        })()
-      );
-    },
+    // ---- Capture target ----
 
-    /**
-     * Page description / subtitle — the text block right below the title.
-     * Notion uses a placeholder "Add a description..." or similar.
-     */
-    pageDescription() {
-      return (
-        document.querySelector(
-          '.notion-page-content [placeholder*="description"]'
-        )?.closest(".notion-selectable") ||
-        document.querySelector(
-          '.notion-page-content [placeholder*="Description"]'
-        )?.closest(".notion-selectable")
-      );
-    },
-
-    /**
-     * Notion UI chrome — elements that are part of the Notion
-     * editing interface rather than page content:
-     *   - "+ New" row button at the bottom of tables
-     *   - View selector tabs (Board / Timeline / Table / etc.)
-     *   - Collection toolbars
-     * Returns an array of elements.
-     */
-    uiChrome() {
-      const elements = [];
-
-      // "+ New" button row below tables/databases
-      // This is typically a div with text "New" and a "+" icon,
-      // often matched by a role or specific class pattern.
-      document.querySelectorAll(".notion-collection-view-body").forEach((body) => {
-        // The "New" row is usually the next sibling or a child after the table
-        const newRows = body.parentElement?.querySelectorAll(
-          'div[role="button"]'
-        );
-        newRows?.forEach((btn) => {
-          if (btn.textContent?.trim() === "New" || btn.textContent?.trim() === "+ New") {
-            elements.push(btn.closest(".notion-selectable") || btn);
-          }
-        });
-      });
-
-      // Direct selector for the new row
-      document.querySelectorAll('.notion-new-record-button, [class*="newRow"]').forEach((el) => {
-        elements.push(el);
-      });
-
-      // Also try the "New" link at the bottom of table views
-      document.querySelectorAll('.notion-table-view-add-row, .notion-list-view-add-row, .notion-board-view-add-row').forEach((el) => {
-        elements.push(el);
-      });
-
-      // Broader heuristic: any row at the bottom of a collection that
-      // has a "plus" SVG and "New" text
-      document.querySelectorAll('.notion-collection_view-block').forEach((block) => {
-        const candidates = block.querySelectorAll('div[role="button"]');
-        candidates.forEach((btn) => {
-          const text = btn.textContent?.trim().toLowerCase();
-          if (text === "new" || text === "+ new") {
-            const wrapper = btn.closest('[style*="height: 33px"]') ||
-                            btn.closest('[style*="height: 32px"]') ||
-                            btn;
-            elements.push(wrapper);
-          }
-        });
-      });
-
-      // View selector / tab bar above databases
-      // This is the bar that shows "Table | Board | Timeline | ..."
-      document.querySelectorAll('.notion-collection-view-tab-bar, .notion-collection_view_page-tab-bar').forEach((el) => {
-        elements.push(el);
-      });
-
-      // Fallback: look for tab containers above collection views
-      document.querySelectorAll('.notion-collection_view-block').forEach((block) => {
-        // The tab bar is typically the first or second child with
-        // multiple clickable items in a horizontal row
-        const firstChildren = block.children;
-        for (let i = 0; i < Math.min(firstChildren.length, 3); i++) {
-          const child = firstChildren[i];
-          const tabs = child.querySelectorAll('[role="tab"], [role="button"]');
-          if (tabs.length >= 2) {
-            // Check if this looks like a view switcher
-            const tabTexts = [...tabs].map((t) => t.textContent?.trim().toLowerCase());
-            const viewKeywords = ["table", "board", "timeline", "calendar", "list", "gallery"];
-            const matchCount = tabTexts.filter((t) =>
-              viewKeywords.some((kw) => t.includes(kw))
-            ).length;
-            if (matchCount >= 2) {
-              elements.push(child);
-            }
-          }
-        }
-      });
-
-      // Collection toolbar (filter, sort, search bar above databases)
-      document.querySelectorAll('.notion-collection-view-toolbar, .notion-collection_view-toolbar').forEach((el) => {
-        elements.push(el);
-      });
-
-      return [...new Set(elements)]; // deduplicate
-    },
-
-    /**
-     * The main page content area (below cover/title).
-     * Used for sub-element lookups and wide-database fitting.
-     */
-    pageContent() {
-      return (
-        document.querySelector(".notion-page-content") ||
-        // Scoped to .notion-frame so we never match the sidebar scroller
-        document.querySelector(".notion-frame .notion-scroller") ||
-        document.querySelector('.notion-frame [class*="scroller"]') ||
-        document.querySelector(".notion-frame")
-      );
-    },
-
-    /**
-     * The full capture target — the scrollable content pane inside
-     * .notion-frame that contains cover + icon + title + page content.
-     * This is everything to the RIGHT of the sidebar.
-     */
     captureTarget() {
       return (
-        // The scroller inside the frame holds cover + title + content
         document.querySelector(".notion-frame .notion-scroller") ||
         document.querySelector('.notion-frame [class*="scroller"]') ||
         document.querySelector(".notion-frame") ||
@@ -214,9 +49,256 @@
       );
     },
 
+    // ---- Page elements (structural matching) ----
+
     /**
-     * The sidebar — the left panel with Search, Home, Favorites, etc.
+     * Page cover image — the large banner at the top.
+     * Strategy: walk direct children of the scroller that appear BEFORE
+     * the title section and look for one that contains an <img> or a
+     * background-image and has significant height.
      */
+    pageCover() {
+      const scroller = this.captureTarget();
+      const titleInput = this._titleInput();
+      if (!scroller || !titleInput) return null;
+
+      const titleSection = this._scrollerChildOf(titleInput);
+      if (!titleSection) return null;
+
+      for (const child of scroller.children) {
+        // Stop once we reach the section that holds the title
+        if (child === titleSection) break;
+        // Skip tiny/invisible elements
+        if (child.offsetHeight < 60 || child.offsetWidth < 100) continue;
+
+        // Has a direct <img>?
+        if (child.querySelector("img")) return child;
+
+        // Has a CSS background-image?
+        const bg = getComputedStyle(child).backgroundImage;
+        if (bg && bg !== "none") return child;
+
+        // Check nested children for background-image or img
+        for (const gc of child.querySelectorAll("*")) {
+          if (gc.tagName === "IMG") return child;
+          const gcBg = getComputedStyle(gc).backgroundImage;
+          if (gcBg && gcBg !== "none" && gc.offsetHeight >= 40) return child;
+        }
+      }
+      return null;
+    },
+
+    /**
+     * Page icon — emoji or uploaded image near the title.
+     * Strategy: starting from the title input, walk up the DOM tree.
+     * At each level, check siblings for icon-like content (large emoji
+     * or small image). Stop before reaching the scroller.
+     */
+    pageIcon() {
+      const titleInput = this._titleInput();
+      if (!titleInput) return null;
+
+      let current = titleInput;
+      for (let depth = 0; depth < 10; depth++) {
+        const parent = current.parentElement;
+        if (!parent || parent === this.captureTarget()) break;
+
+        for (const sibling of parent.children) {
+          if (sibling === current || sibling.contains(titleInput)) continue;
+          if (sibling.offsetHeight === 0 || sibling.offsetWidth === 0) continue;
+          // Skip large containers (description, page content, etc.)
+          if (sibling.offsetHeight > 200) continue;
+
+          const text = sibling.textContent?.trim();
+
+          // Large emoji: short text content + large font-size
+          if (text && text.length <= 4) {
+            const hasLargeFont = (el) => parseFloat(getComputedStyle(el).fontSize) >= 40;
+            if (hasLargeFont(sibling)) return sibling;
+            for (const child of sibling.querySelectorAll("*")) {
+              if (hasLargeFont(child)) return sibling;
+            }
+          }
+
+          // Uploaded icon image (small-ish, roughly square)
+          const img = sibling.querySelector("img");
+          if (
+            img &&
+            img.offsetHeight >= 30 && img.offsetHeight <= 200 &&
+            img.offsetWidth >= 30 && img.offsetWidth <= 200
+          ) {
+            return sibling;
+          }
+        }
+        current = parent;
+      }
+      return null;
+    },
+
+    /**
+     * Page title — the large editable heading.
+     * Strategy: walk up from [placeholder="Untitled"] until we find a
+     * parent that has OTHER visible children (like the icon). Return the
+     * child branch that contains the title, NOT the shared parent. This
+     * lets us hide the title independently of the icon.
+     */
+    pageTitle() {
+      const titleInput = this._titleInput();
+      if (!titleInput) return null;
+
+      let el = titleInput;
+      const scroller = this.captureTarget();
+      while (el.parentElement && el.parentElement !== scroller) {
+        const parent = el.parentElement;
+        const visibleSiblings = [...parent.children].filter(
+          (c) => c !== el && c.offsetHeight > 0 && c.offsetWidth > 0
+        );
+        if (visibleSiblings.length > 0) {
+          // Parent has other visible children — el is the title container
+          return el;
+        }
+        el = parent;
+      }
+      // Reached the scroller — return the direct child holding the title
+      return el;
+    },
+
+    /**
+     * Page description / subtitle.
+     * Strategy 1: look for [placeholder] containing "description" (case-insensitive).
+     * Strategy 2: find scroller children between the title section and
+     *             the database/page-content section.
+     */
+    pageDescription() {
+      const scroller = this.captureTarget();
+      const titleInput = this._titleInput();
+
+      // Strategy 1: placeholder attribute
+      const byPlaceholder = document.querySelector(
+        '[placeholder*="description" i]'
+      );
+      if (byPlaceholder) {
+        // Walk up to find its container, but stop before merging with
+        // the title or scroller
+        let el = byPlaceholder;
+        while (el.parentElement && el.parentElement !== scroller) {
+          const parent = el.parentElement;
+          // Stop if the parent also contains the title (shared header section)
+          if (titleInput && parent.contains(titleInput) && !el.contains(titleInput)) {
+            return el;
+          }
+          const visibleSiblings = [...parent.children].filter(
+            (c) => c !== el && c.offsetHeight > 0 && c.offsetWidth > 0
+          );
+          if (visibleSiblings.length > 0) return el;
+          el = parent;
+        }
+        return el;
+      }
+
+      // Strategy 2: structural — children between title and database
+      if (!scroller || !titleInput) return null;
+      const titleSection = this._scrollerChildOf(titleInput);
+      if (!titleSection) return null;
+
+      const dbBlock = document.querySelector(".notion-collection_view-block");
+      const dbSection = dbBlock ? this._scrollerChildOf(dbBlock) : null;
+      const pageContent = document.querySelector(".notion-page-content");
+      const pcSection = pageContent ? this._scrollerChildOf(pageContent) : null;
+
+      let foundTitle = false;
+      for (const child of scroller.children) {
+        if (child === titleSection) { foundTitle = true; continue; }
+        if (!foundTitle) continue;
+        if (child === dbSection || child === pcSection) break;
+        if (child.offsetHeight > 0 && child.textContent?.trim()) return child;
+      }
+      return null;
+    },
+
+    /**
+     * Notion UI chrome — editing interface elements:
+     *   - "+ New" row button at the bottom of tables
+     *   - View selector tabs (Board / Table / Timeline / ...)
+     *   - Collection toolbars (Filter, Sort, ...)
+     * Searches inside .notion-collection_view-block AND the scroller
+     * (for full-page databases where there's no collection_view-block).
+     * Returns an array of elements.
+     */
+    uiChrome() {
+      const elements = [];
+      const seen = new WeakSet();
+      const addUnique = (el) => {
+        if (el && !seen.has(el)) { seen.add(el); elements.push(el); }
+      };
+
+      // Containers to search: collection blocks + scroller (full-page DB)
+      const containers = [
+        ...document.querySelectorAll(".notion-collection_view-block"),
+      ];
+      const scroller = this.captureTarget();
+      if (scroller) containers.push(scroller);
+
+      for (const container of containers) {
+        // 1. "+ New" button
+        container.querySelectorAll('[role="button"], div, a').forEach((el) => {
+          const text = el.textContent?.trim();
+          if (
+            (text === "New" || text === "+ New" || text === "+New") &&
+            el.offsetHeight > 0 && el.offsetHeight < 50 &&
+            el.children.length <= 5
+          ) {
+            // Walk up to find the row-level wrapper
+            let row = el;
+            while (
+              row.parentElement &&
+              row.parentElement !== container &&
+              row.parentElement.children.length <= 2
+            ) {
+              row = row.parentElement;
+            }
+            addUnique(row);
+          }
+        });
+
+        // 2. View tabs (short bar with view-type keywords)
+        for (const child of container.children) {
+          if (child.offsetHeight === 0 || child.offsetHeight > 60) continue;
+          const buttons = child.querySelectorAll('[role="button"], [role="tab"], a');
+          if (buttons.length < 2) continue;
+          const viewKw = ["table", "board", "timeline", "calendar", "list", "gallery"];
+          const matches = [...buttons].filter((b) => {
+            const t = b.textContent?.toLowerCase() || "";
+            return viewKw.some((kw) => t.includes(kw));
+          });
+          if (matches.length >= 1) {
+            addUnique(child);
+          }
+        }
+
+        // 3. Toolbar (filter / sort controls)
+        for (const child of container.children) {
+          if (child.offsetHeight === 0 || child.offsetHeight > 50) continue;
+          const text = child.textContent?.toLowerCase() || "";
+          if (text.includes("filter") || text.includes("sort")) {
+            addUnique(child);
+          }
+        }
+      }
+
+      return elements;
+    },
+
+    // ---- Layout elements (for wide-database fit / always-hide) ----
+
+    pageContent() {
+      return (
+        document.querySelector(".notion-page-content") ||
+        document.querySelector(".notion-frame .notion-scroller") ||
+        document.querySelector(".notion-frame")
+      );
+    },
+
     sidebar() {
       return (
         document.querySelector(".notion-sidebar") ||
@@ -224,21 +306,16 @@
       );
     },
 
-    /**
-     * The top bar / header above the page content.
-     */
     topBar() {
       return (
         document.querySelector(".notion-topbar") ||
         document.querySelector('[class*="notion-topbar"]') ||
-        document.querySelector(".notion-frame > div:first-child:not(.notion-scroller)")
+        document.querySelector(
+          ".notion-frame > div:first-child:not(.notion-scroller)"
+        )
       );
     },
 
-    /**
-     * The scroller / frame that contains the page.
-     * Used for wide-database fitting.
-     */
     frame() {
       return (
         document.querySelector(".notion-frame") ||
@@ -246,11 +323,6 @@
       );
     },
 
-    /**
-     * Database / collection view blocks.
-     * Used for wide-database fitting — we need to know the
-     * actual content width of the database.
-     */
     collectionViews() {
       return document.querySelectorAll(
         ".notion-collection_view-block, .notion-table-view, .notion-board-view"
@@ -340,7 +412,10 @@
         </button>
         <div class="nss-status"></div>
       </div>
-      <div class="nss-footer">Notion Screenshot Tool v1.0</div>
+      <div class="nss-footer">
+        <span>v1.0</span>
+        <button class="nss-debug-btn" title="Highlight detected elements (check console)">Debug</button>
+      </div>
     `;
 
     document.body.appendChild(tab);
@@ -469,7 +544,93 @@
   updatePresetHighlight();
 
   // ----------------------------------------------------------------
-  // 6. VISIBILITY MANIPULATION (apply / restore)
+  // 6. DEBUG — highlight what each selector matches
+  // ----------------------------------------------------------------
+
+  function debugSelectors() {
+    // Clear previous highlights
+    document.querySelectorAll("[data-nss-debug]").forEach((el) => {
+      el.style.outline = "";
+      delete el.dataset.nssDebug;
+    });
+
+    const results = {
+      captureTarget: NotionSelectors.captureTarget(),
+      pageCover: NotionSelectors.pageCover(),
+      pageIcon: NotionSelectors.pageIcon(),
+      pageTitle: NotionSelectors.pageTitle(),
+      pageDescription: NotionSelectors.pageDescription(),
+      sidebar: NotionSelectors.sidebar(),
+      topBar: NotionSelectors.topBar(),
+    };
+    const uiChromeResults = NotionSelectors.uiChrome();
+
+    const colors = {
+      captureTarget: "#2196F3",
+      pageCover: "#F44336",
+      pageIcon: "#FF9800",
+      pageTitle: "#4CAF50",
+      pageDescription: "#9C27B0",
+      sidebar: "#607D8B",
+      topBar: "#795548",
+    };
+
+    console.group("[NSS] Selector Debug Results");
+    for (const [name, el] of Object.entries(results)) {
+      if (el) {
+        console.log(
+          `%c${name}: FOUND`,
+          `color: ${colors[name]}; font-weight: bold`,
+          el
+        );
+        el.style.outline = `3px dashed ${colors[name]}`;
+        el.dataset.nssDebug = name;
+      } else {
+        console.warn(`${name}: NOT FOUND`);
+      }
+    }
+    console.log(
+      `uiChrome: ${uiChromeResults.length} element(s)`,
+      uiChromeResults
+    );
+    uiChromeResults.forEach((el, i) => {
+      el.style.outline = "3px dashed #E91E63";
+      el.dataset.nssDebug = `ui-chrome-${i}`;
+    });
+
+    // Dump scroller's direct children for manual inspection
+    const scroller = results.captureTarget;
+    if (scroller) {
+      console.log("\nScroller direct children:");
+      [...scroller.children].forEach((c, i) => {
+        console.log(
+          `  [${i}] <${c.tagName.toLowerCase()}> classes="${c.className}" ` +
+          `h=${c.offsetHeight} w=${c.offsetWidth} ` +
+          `text="${(c.textContent || "").slice(0, 60).replace(/\n/g, "\\n")}"`
+        );
+      });
+    }
+    console.groupEnd();
+
+    setStatus(`Found: cover=${!!results.pageCover}, icon=${!!results.pageIcon}, title=${!!results.pageTitle}, desc=${!!results.pageDescription}, ui=${uiChromeResults.length}`);
+
+    // Auto-clear highlights after 6 seconds
+    setTimeout(() => {
+      document.querySelectorAll("[data-nss-debug]").forEach((el) => {
+        el.style.outline = "";
+        delete el.dataset.nssDebug;
+      });
+    }, 6000);
+  }
+
+  // Wire up the debug button
+  panel.querySelector(".nss-debug-btn").addEventListener("click", debugSelectors);
+
+  // Expose globally so user can also run from console
+  window.__nssDebug = debugSelectors;
+
+  // ----------------------------------------------------------------
+  // 7. VISIBILITY MANIPULATION (apply / restore)
   // ----------------------------------------------------------------
 
   /**
@@ -517,7 +678,7 @@
   }
 
   // ----------------------------------------------------------------
-  // 7. WIDE DATABASE FIT
+  // 8. WIDE DATABASE FIT
   // ----------------------------------------------------------------
 
   /**
@@ -613,7 +774,7 @@
   }
 
   // ----------------------------------------------------------------
-  // 8. FULL-PAGE EXPANSION (capture off-screen content)
+  // 9. FULL-PAGE EXPANSION (capture off-screen content)
   // ----------------------------------------------------------------
 
   /**
@@ -668,7 +829,7 @@
   }
 
   // ----------------------------------------------------------------
-  // 9. SCREENSHOT CAPTURE
+  // 10. SCREENSHOT CAPTURE
   // ----------------------------------------------------------------
 
   const statusEl = panel.querySelector(".nss-status");
@@ -741,9 +902,7 @@
         a.href = url;
 
         // Generate a filename from the page title
-        const titleEl = document.querySelector(
-          '.notion-page-content [placeholder="Untitled"]'
-        );
+        const titleEl = document.querySelector('[placeholder="Untitled"]');
         const pageTitle =
           titleEl?.textContent?.trim().replace(/[^a-zA-Z0-9-_ ]/g, "").slice(0, 50) ||
           "notion-screenshot";
@@ -804,7 +963,7 @@
   screenshotBtn.addEventListener("click", takeScreenshot);
 
   // ----------------------------------------------------------------
-  // 10. DONE — log to console for debugging
+  // 11. DONE — log to console for debugging
   // ----------------------------------------------------------------
   console.log("[Notion Screenshot Tool] Extension loaded.");
 })();

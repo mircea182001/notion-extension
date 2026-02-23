@@ -240,9 +240,25 @@
   flex-shrink: 0;
   padding: 10px 16px;
   border-top: 1px solid #eee;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 11px;
   color: #bbb;
+}
+.nss-debug-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: #999;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.nss-debug-btn:hover {
+  background: #f0f0f0;
+  color: #555;
 }
 
 /* ---------- utility: hide elements for screenshot ---------- */
