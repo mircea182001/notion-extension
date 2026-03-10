@@ -293,11 +293,11 @@
       if (scroller) containers.push(scroller);
 
       for (const container of containers) {
-        // 1. "+ New" button
+        // 1. "+ New" / "+ New page" button
         container.querySelectorAll('[role="button"], div, a').forEach((el) => {
           const text = el.textContent?.trim();
           if (
-            (text === "New" || text === "+ New" || text === "+New") &&
+            /^\+?\s*New(\s+page)?$/i.test(text) &&
             el.offsetHeight > 0 && el.offsetHeight < 50 &&
             el.children.length <= 5
           ) {
@@ -337,6 +337,19 @@
             addUnique(child);
           }
         }
+
+        // 4. "Hide description" / "Show description" toggle button
+        container.querySelectorAll('[role="button"], div, a, span').forEach((el) => {
+          const text = el.textContent?.trim();
+          if (!text || text.length > 25) return;
+          if (
+            /^.{0,3}(Hide|Show)\s+description$/i.test(text) &&
+            el.offsetHeight > 0 && el.offsetHeight < 50 &&
+            el.children.length <= 5
+          ) {
+            addUnique(el);
+          }
+        });
       }
 
       return elements;
@@ -451,6 +464,7 @@
           </label>
         </div>
 
+        <!-- Fit wide database toggle — commented out per user request
         <div class="nss-toggle-row">
           <span class="nss-toggle-label">Fit wide database</span>
           <label class="nss-switch">
@@ -458,6 +472,7 @@
             <span class="nss-slider"></span>
           </label>
         </div>
+        -->
 
         <button class="nss-screenshot-btn">
           <span class="nss-camera-icon">&#128247;</span>
@@ -517,7 +532,6 @@
     title: false,
     description: false,
     "ui-chrome": false,
-    "fit-wide": false,
   };
 
   function getToggle(name) {
@@ -556,7 +570,6 @@
       setToggle("title", true);
       setToggle("description", true);
       setToggle("ui-chrome", true);
-      setToggle("fit-wide", true);
     }
     updatePresetHighlight();
   }
@@ -567,16 +580,14 @@
       !toggles.icon &&
       !toggles.title &&
       !toggles.description &&
-      !toggles["ui-chrome"] &&
-      !toggles["fit-wide"];
+      !toggles["ui-chrome"];
 
     const dbOnlyMatch =
       toggles.cover &&
       toggles.icon &&
       toggles.title &&
       toggles.description &&
-      toggles["ui-chrome"] &&
-      toggles["fit-wide"];
+      toggles["ui-chrome"];
 
     panel.querySelectorAll(".nss-preset-btn").forEach((btn) => {
       btn.classList.remove("nss-active");
@@ -882,7 +893,71 @@
   }
 
   // ----------------------------------------------------------------
-  // 10. SCREENSHOT CAPTURE
+  // 10. EMOJI ICON → IMAGE CONVERSION (for html2canvas)
+  // ----------------------------------------------------------------
+
+  /**
+   * html2canvas cannot render emoji characters from system fonts.
+   * Before capture, we find the page icon emoji, render it to a
+   * <canvas>, and temporarily replace it with an <img> that
+   * html2canvas CAN render. Returns a restore function.
+   */
+  function replaceEmojiIconForCapture() {
+    // If the icon is being hidden, no need to render it
+    if (toggles.icon) return () => {};
+
+    const iconEl = NotionSelectors.pageIcon();
+    if (!iconEl) return () => {};
+
+    // Find the leaf element that contains the emoji character
+    const allEls = [iconEl, ...iconEl.querySelectorAll("*")];
+    let emojiEl = null;
+
+    for (const el of allEls) {
+      if (el.children.length > 0) continue; // only leaf nodes
+      const text = el.textContent?.trim();
+      if (!text || text.length > 4) continue;
+      if (!/[^\x00-\x7F]/.test(text)) continue; // must have non-ASCII (emoji)
+      emojiEl = el;
+      break;
+    }
+
+    if (!emojiEl) return () => {};
+
+    const emojiText = emojiEl.textContent.trim();
+    const fontSize = parseFloat(getComputedStyle(emojiEl).fontSize) || 40;
+
+    // Render the emoji to a canvas
+    const cvs = document.createElement("canvas");
+    const size = Math.ceil(fontSize * 1.4);
+    cvs.width = size;
+    cvs.height = size;
+    const ctx = cvs.getContext("2d");
+    ctx.font = `${fontSize}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(emojiText, size / 2, size / 2);
+
+    // Create an <img> from the canvas data URL
+    const img = document.createElement("img");
+    img.src = cvs.toDataURL("image/png");
+    img.style.width = fontSize + "px";
+    img.style.height = fontSize + "px";
+    img.style.display = "inline-block";
+    img.style.verticalAlign = "middle";
+
+    // Swap emoji text for the image
+    const originalHTML = emojiEl.innerHTML;
+    emojiEl.innerHTML = "";
+    emojiEl.appendChild(img);
+
+    return function restore() {
+      emojiEl.innerHTML = originalHTML;
+    };
+  }
+
+  // ----------------------------------------------------------------
+  // 11. SCREENSHOT CAPTURE
   // ----------------------------------------------------------------
 
   const statusEl = panel.querySelector(".nss-status");
@@ -904,6 +979,9 @@
 
     // Apply visibility toggles
     const restoreVisibility = applyVisibilitySettings();
+
+    // Replace emoji icon with a rendered image so html2canvas can capture it
+    const restoreEmoji = replaceEmojiIconForCapture();
 
     // Determine the target element to capture — the content area
     // to the right of the sidebar (cover + title + page content)
@@ -987,6 +1065,7 @@
       setStatus("Capture failed: " + err.message, "error");
     } finally {
       // Restore everything
+      restoreEmoji();
       restoreExpansion();
       restoreVisibility();
       restoreWide();
@@ -1016,7 +1095,7 @@
   screenshotBtn.addEventListener("click", takeScreenshot);
 
   // ----------------------------------------------------------------
-  // 11. DONE — log to console for debugging
+  // 12. DONE — log to console for debugging
   // ----------------------------------------------------------------
   console.log("[Notion Screenshot Tool] Extension loaded.");
 })();
